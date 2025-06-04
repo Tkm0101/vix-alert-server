@@ -25,27 +25,23 @@ export default async function handler(req, res) {
     
     if (vixPrice >= upperThreshold) {
       shouldSendAlert = true;
-      alertSubject = '🚨 VIX上限アラート！';
+      alertSubject = 'VIX上限アラート';
       alertMessage = `VIX指数が上限閾値を超えました。
       
 現在値: ${vixPrice.toFixed(2)}
 上限閾値: ${upperThreshold}
-      
-市場の恐怖指数が高まっています。ポジションの確認をお勧めします。
 
-時刻: ${new Date().toLocaleString('ja-JP')}`;
+時刻: ${new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}
       
     } else if (vixPrice <= lowerThreshold) {
       shouldSendAlert = true;
-      alertSubject = '📉 VIX下限アラート！';
-      alertMessage = `VIX指数が下限閾値を下回りました。
+      alertSubject = 'VIX下限アラート';
+      alertMessage = `VIX指数が設定した下限閾値を下回りました。
       
 現在値: ${vixPrice.toFixed(2)}
 下限閾値: ${lowerThreshold}
       
-市場が安定している可能性があります。
-
-時刻: ${new Date().toLocaleString('ja-JP')}`;
+時刻: ${new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}
     }
     
     if (shouldSendAlert && resendApiKey && alertEmail) {
