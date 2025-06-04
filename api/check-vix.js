@@ -1,121 +1,148 @@
-export default async function handler(req, res) {
-  try {
-    console.log('🔄 VIXアラートチェック開始...');
-    
-    // VIXデータを取得
-    const vixResponse = await fetch('https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX');
-    const vixData = await vixResponse.json();
-    
-    // VIX価格を抽出
-    const vixPrice = vixData.chart.result[0].meta.regularMarketPrice;
-    console.log(`📊 現在のVIX: ${vixPrice}`);
-    
-    // 環境変数から設定を取得
-    const upperThreshold = parseFloat(process.env.UPPER_THRESHOLD) || 30;
-    const lowerThreshold = parseFloat(process.env.LOWER_THRESHOLD) || 15;
-    const resendApiKey = process.env.RESEND_API_KEY;
-    const alertEmail = process.env.ALERT_EMAIL;
-    
-    console.log(`⚙️ 閾値設定 - 上限: ${upperThreshold}, 下限: ${lowerThreshold}`);
-    
-    // 閾値チェック
-    let shouldSendAlert = false;
-    let alertMessage = '';
-    let alertSubject = '';
-    
-    if (vixPrice >= upperThreshold) {
-      shouldSendAlert = true;
-      alertSubject = 'VIX上限アラート';
-      alertMessage = `VIX指数が上限閾値を超えました。
-      
-現在値: ${vixPrice.toFixed(2)}
-上限閾値: ${upperThreshold}
+// api/check-vix.js - 修正版
+import { Resend } from 'resend';
 
-時刻: ${new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}
-      
-    } else if (vixPrice <= lowerThreshold) {
-      shouldSendAlert = true;
-      alertSubject = 'VIX下限アラート';
-      alertMessage = `VIX指数が設定した下限閾値を下回りました。
-      
-現在値: ${vixPrice.toFixed(2)}
-下限閾値: ${lowerThreshold}
-      
-時刻: ${new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' })}
-    }
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+export default async function handler(req, res) {
+  // 環境変数の確認
+  const upperThreshold = parseFloat(process.env.UPPER_THRESHOLD) || 30;
+  const lowerThreshold = parseFloat(process.env.LOWER_THRESHOLD) || 10;
+  const alertEmail = process.env.ALERT_EMAIL;
+
+  console.log('🔧 Environment check:', {
+    upperThreshold,
+    lowerThreshold,
+    alertEmail: alertEmail ? '✅ Set' : '❌ Missing',
+    resendKey: process.env.RESEND_API_KEY ? '✅ Set' : '❌ Missing'
+  });
+
+  // 必須環境変数のチェック
+  if (!alertEmail || !process.env.RESEND_API_KEY) {
+    console.error('❌ Missing required environment variables');
+    return res.status(500).json({
+      error: 'Missing required environment variables',
+      details: {
+        alertEmail: !!alertEmail,
+        resendKey: !!process.env.RESEND_API_KEY
+      }
+    });
+  }
+
+  try {
+    console.log('🚀 Starting VIX data fetch...');
     
-    if (shouldSendAlert && resendApiKey && alertEmail) {
-      console.log('📧 メール通知を送信中...');
-      
-      // Resend APIでメール送信
-      const emailResponse = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
+    // Yahoo Finance APIからVIXデータを取得
+    const response = await fetch(
+      'https://query1.finance.yahoo.com/v8/finance/chart/%5EVIX?interval=1d&range=1d',
+      {
         headers: {
-          'Authorization': `Bearer ${resendApiKey}`,
-          'Content-Type': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         },
-        body: JSON.stringify({
+        timeout: 10000 // 10秒タイムアウト
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Yahoo Finance API error: ${response.status} ${response.statusText}`);
+    }
+
+    const data = await response.json();
+    console.log('📊 Raw API response received');
+
+    // データの検証
+    if (!data?.chart?.result?.[0]?.meta?.regularMarketPrice) {
+      console.error('❌ Invalid API response structure:', JSON.stringify(data, null, 2));
+      throw new Error('Invalid data structure from Yahoo Finance API');
+    }
+
+    const vixValue = data.chart.result[0].meta.regularMarketPrice;
+    const timestamp = new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' });
+
+    console.log(`📈 Current VIX: ${vixValue} (Thresholds: ${lowerThreshold} - ${upperThreshold})`);
+
+    // アラート条件の確認
+    let shouldAlert = false;
+    let alertType = '';
+    let alertMessage = '';
+
+    if (vixValue >= upperThreshold) {
+      shouldAlert = true;
+      alertType = 'HIGH';
+      alertMessage = `VIX HIGH Alert: ${vixValue} (Threshold: ${upperThreshold}+) - Market fear index at high level.`;
+    } else if (vixValue <= lowerThreshold) {
+      shouldAlert = true;
+      alertType = 'LOW';
+      alertMessage = `VIX LOW Alert: ${vixValue} (Threshold: ${lowerThreshold}-) - Market fear index at low level.`;
+    }
+
+    console.log(`🔔 Alert needed: ${shouldAlert} (Type: ${alertType})`);
+
+    // メール送信
+    let emailResult = null;
+    if (shouldAlert) {
+      try {
+        emailResult = await resend.emails.send({
           from: 'VIX Alert <onboarding@resend.dev>',
           to: [alertEmail],
-          subject: alertSubject,
-          text: alertMessage,
-        }),
-      });
-      
-      if (emailResponse.ok) {
-        const emailResult = await emailResponse.json();
-        console.log('✅ メール送信成功:', emailResult.id);
-        
-        res.status(200).json({
-          success: true,
-          alert: true,
-          message: `アラート送信: ${alertSubject}`,
-          vixPrice: vixPrice,
-          emailSent: true,
-          emailId: emailResult.id
+          subject: `VIX ${alertType} Alert - ${vixValue}`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: ${alertType === 'HIGH' ? '#dc3545' : '#28a745'};">
+                VIX ${alertType === 'HIGH' ? 'HIGH' : 'LOW'} Alert
+              </h2>
+              <div style="background: #f8f9fa; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <p><strong>Current VIX Value:</strong> ${vixValue}</p>
+                <p><strong>Threshold:</strong> ${alertType === 'HIGH' ? upperThreshold + '+' : lowerThreshold + '-'}</p>
+                <p><strong>Detection Time:</strong> ${timestamp}</p>
+              </div>
+              <p>${alertMessage}</p>
+              <hr>
+              <p style="font-size: 12px; color: #666;">
+                This alert was automatically sent by VIX Alert System.
+              </p>
+            </div>
+          `
         });
-      } else {
-        const errorData = await emailResponse.text();
-        console.error('❌ メール送信失敗:', errorData);
         
-        res.status(200).json({
-          success: true,
-          alert: true,
-          message: `アラート発生（メール送信失敗）: ${alertSubject}`,
-          vixPrice: vixPrice,
-          emailSent: false,
-          error: errorData
-        });
+        console.log('📧 Email sent successfully:', emailResult.data?.id);
+      } catch (emailError) {
+        console.error('❌ Email sending failed:', emailError);
+        // メール送信失敗でもAPIは成功レスポンスを返す
+        emailResult = { error: emailError.message };
       }
-      
-    } else if (shouldSendAlert) {
-      console.log('⚠️ アラート発生but環境変数未設定');
-      res.status(200).json({
-        success: true,
-        alert: true,
-        message: `アラート発生: ${alertSubject}`,
-        vixPrice: vixPrice,
-        emailSent: false,
-        error: 'メール設定が不完全'
-      });
-      
-    } else {
-      console.log('✅ VIX正常範囲内');
-      res.status(200).json({
-        success: true,
-        alert: false,
-        message: `VIX正常範囲内: ${vixPrice.toFixed(2)}`,
-        vixPrice: vixPrice,
-        emailSent: false
-      });
     }
-    
+
+    // 成功レスポンス
+    const response_data = {
+      success: true,
+      timestamp,
+      vix: {
+        value: vixValue,
+        thresholds: {
+          upper: upperThreshold,
+          lower: lowerThreshold
+        }
+      },
+      alert: {
+        triggered: shouldAlert,
+        type: alertType,
+        message: alertMessage
+      },
+      email: emailResult
+    };
+
+    console.log('✅ Request completed successfully');
+    return res.status(200).json(response_data);
+
   } catch (error) {
-    console.error('❌ エラー発生:', error);
-    res.status(500).json({ 
-      success: false, 
+    console.error('❌ Fatal error in VIX check:', error);
+    
+    // 詳細なエラー情報をレスポンスに含める
+    return res.status(500).json({
+      success: false,
       error: error.message,
-      emailSent: false
+      timestamp: new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }),
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 }
