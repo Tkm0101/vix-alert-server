@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/check-vix",
-      "schedule": "0 9 * * 1-5"
+      "schedule": "0 8 * * 1-5"
     }
   ]
 }
